@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+gphoto2
+pillow
+pydantic
+python-multipart
+sh
+opencv-python-headless
+rawpy
+imageio

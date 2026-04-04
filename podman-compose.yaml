@@ -1,0 +1,20 @@
+services:
+  eos_suite:
+    build: .
+    ports:
+      - "3000:3000"
+      - "8000:8000"
+    volumes:
+      - ${STORAGE_ROOT}:/data:Z
+      - /dev/bus/usb:/dev/bus/usb
+    privileged: true # Required for proper USB device interaction in rootless podman
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always
+
+# USAGE:
+# 1. Ensure your Canon camera is connected via USB.
+# 2. Kill the GNOME USB monitor that steals the camera:
+#    pkill -f gvfs-gphoto2-volume-monitor
+# 3. podman-compose up --build
+# 4. Open http://localhost:3000

@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+build
+venv
+.env
+# focus-stack is now built from source inside the container
+# !focus-stack/build/focus-stack
+.git
+.gitignore
+podman-compose.yaml
+*.log
