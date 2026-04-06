@@ -48,6 +48,9 @@ RUN npm install
 WORKDIR /app
 COPY . .
 
+# Build the frontend
+RUN cd frontend && npm run build
+
 # Create data directories
 RUN mkdir -p /data/raw /data/processed /data/previews
 

@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --color-dark-bg: #212121;
+  --color-dark-sidebar: #2d2d2d;
+  --color-dark-accent: #d08221;
+  --color-dark-text: #cccccc;
+  --color-dark-border: #404040;
+}
+
+@layer base {
+  body {
+    @apply bg-dark-bg text-dark-text font-sans selection:bg-dark-accent/30;
+    font-size: 0.875rem;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-dark-sidebar border-dark-border;
+  }
+  
+  .dark-input {
+    @apply bg-black/20 border border-white/10 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-dark-accent outline-none transition-all;
+  }
+  
+  .dark-button {
+    @apply bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded text-xs transition-colors active:bg-dark-accent/20;
+  }
+
+  .sidebar-title {
+    @apply text-[10px] uppercase tracking-widest text-white/40 font-bold mb-2;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #404040;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #505050;
+  }
+}

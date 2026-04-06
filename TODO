@@ -1,2 +1,2 @@
-1. The image name labels are still not visible in stacker and canvas asset drawers
-2. Tha canvas setting should be docked cause it is sometimes not visible
+1. Rename tabs: Lighttable -> Take pictures, Stacker -> Stack, Canvas -> Stitch
+2. Add tab that will allow for some simple modifications of the image, like brightness, contrast, saturation, crop, rotation, etc. This should be done in a non-destructive way, so that the original image is not modified.

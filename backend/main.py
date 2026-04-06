@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from typing import List
+import asyncio
 import os
 import uuid
 from PIL import Image
@@ -85,15 +86,38 @@ async def camera_preview():
         return {"url": f"/previews/{os.path.basename(path)}?t={int(time.time()*1000)}"}
     raise HTTPException(status_code=500, detail="Preview failed")
 
+@app.get("/camera/stream")
+async def camera_stream(request: Request):
+    async def frame_generator():
+        while True:
+            if await request.is_disconnected():
+                break
+            
+            # Using asyncio.to_thread to not block the async event loop
+            path = await asyncio.to_thread(camera.capture_preview)
+            if path:
+                try:
+                    with open(path, "rb") as f:
+                        image_data = f.read()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + image_data + b'\r\n')
+                except Exception as e:
+                    logger.error(f"Error reading preview file: {e}")
+            
+            # Brief pause to allow other threads to acquire the lock
+            await asyncio.sleep(0.05)
+
+    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+
 @app.post("/camera/capture")
 async def capture():
     path = camera.capture_image()
     if path:
         filename = os.path.basename(path)
         result = {"filename": filename, "url": f"/raw/{filename}"}
-        # Add normalized BMP URL
-        bmp_name = os.path.splitext(filename)[0] + ".bmp"
-        result["normalized_url"] = f"/normalized/{bmp_name}"
+        # Add normalized PNG URL
+        png_name = os.path.splitext(filename)[0] + ".png"
+        result["normalized_url"] = f"/normalized/{png_name}"
         
         if filename.lower().endswith(".cr2"):
             preview_name = os.path.splitext(filename)[0] + ".jpg"
@@ -133,16 +157,16 @@ async def list_images():
             w, h = get_dims(full_path)
             img_info["width"], img_info["height"] = w, h
         
-        # Check for normalized BMP
-        bmp_name = os.path.splitext(f)[0] + ".bmp"
-        if os.path.exists(os.path.join(NORMALIZED_DATA_PATH, bmp_name)):
-            img_info["normalized_url"] = f"/normalized/{bmp_name}"
-            # Use BMP as preview if it exists and no other preview is set
+        # Check for normalized PNG
+        png_name = os.path.splitext(f)[0] + ".png"
+        if os.path.exists(os.path.join(NORMALIZED_DATA_PATH, png_name)):
+            img_info["normalized_url"] = f"/normalized/{png_name}"
+            # Use PNG as preview if it exists and no other preview is set
             if "preview_url" not in img_info:
                 img_info["preview_url"] = img_info["normalized_url"]
-                # Update dims from BMP if still 0
+                # Update dims from PNG if still 0
                 if img_info["width"] == 0:
-                   w, h = get_dims(os.path.join(NORMALIZED_DATA_PATH, bmp_name))
+                   w, h = get_dims(os.path.join(NORMALIZED_DATA_PATH, png_name))
                    img_info["width"], img_info["height"] = w, h
             
         raw_list.append(img_info)
@@ -197,13 +221,13 @@ async def save_canvas(data: dict = Body(...)):
         logger.info(f"Received canvas save request: Header: {header}, Data length: {len(encoded)} bytes")
         decoded = base64.b64decode(encoded)
         
-        filename = f"canvas_{int(time.time())}.bmp"
+        filename = f"canvas_{int(time.time())}.png"
         full_path = os.path.join(PROCESSED_DATA_PATH, filename)
         
         logger.info(f"Saving canvas to {full_path}")
-        # Use PIL to save as BMP for reliability
+        # Use PIL to save as PNG for reliability
         img = Image.open(BytesIO(decoded))
-        img.save(full_path, "BMP")
+        img.save(full_path, "PNG")
         logger.info(f"Canvas save successful: {filename} ({img.width}x{img.height})")
             
         return {"status": "ok", "filename": filename, "url": f"/processed/{filename}"}

@@ -6,10 +6,15 @@ services:
       - "8000:8000"
     volumes:
       - ${STORAGE_ROOT}:/data:Z
+      - ./frontend:/app/frontend:Z
+      - ./backend:/app/backend:Z
+      - /app/frontend/node_modules
+      - /app/backend/__pycache__
       - /dev/bus/usb:/dev/bus/usb
     privileged: true # Required for proper USB device interaction in rootless podman
     environment:
       - PYTHONUNBUFFERED=1
+      - WATCHPACK_POLLING=true
     restart: always
 
 # USAGE:

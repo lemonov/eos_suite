@@ -99,12 +99,12 @@ class CameraManager:
                     
                     logger.info(f"Downloaded image to: {target} ({file_size} bytes)")
                     
-                    # Generate BMP normalized version
-                    normalized_path = self._normalize_to_bmp(target)
+                    # Generate PNG normalized version
+                    normalized_path = self._normalize_to_png(target)
                     if normalized_path:
-                        logger.info(f"Normalized BMP ready: {normalized_path}")
+                        logger.info(f"Normalized PNG ready: {normalized_path}")
                     else:
-                        logger.warning(f"BMP normalization failed for {target}")
+                        logger.warning(f"PNG normalization failed for {target}")
 
                     # Generate preview if it's a RAW file
                     if target.lower().endswith(".cr2"):
@@ -158,13 +158,13 @@ class CameraManager:
             logger.error(f"Failed to generate JPG preview: {ex}")
             return None
 
-    def _normalize_to_bmp(self, input_path):
-        """Convert any supported image file to BMP format in /data/normalized."""
+    def _normalize_to_png(self, input_path):
+        """Convert any supported image file to PNG format in /data/normalized."""
         try:
-            logger.info(f"Normalizing {input_path} to BMP")
+            logger.info(f"Normalizing {input_path} to PNG")
             base_name = os.path.basename(input_path)
-            bmp_name = os.path.splitext(base_name)[0] + ".bmp"
-            bmp_target = os.path.join(self.normalized_path, bmp_name)
+            png_name = os.path.splitext(base_name)[0] + ".png"
+            png_target = os.path.join(self.normalized_path, png_name)
 
             if input_path.lower().endswith(".cr2"):
                 with rawpy.imread(input_path) as raw:
@@ -176,17 +176,18 @@ class CameraManager:
                     return None
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
-            # Save as BMP using OpenCV (expects BGR)
+            # Save as PNG using OpenCV (expects BGR)
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            success = cv2.imwrite(bmp_target, bgr)
+            # Default compression is 3 for PNG, which is a good balance
+            success = cv2.imwrite(png_target, bgr)
             if not success:
-                logger.error(f"Failed to write BMP to {bmp_target}")
+                logger.error(f"Failed to write PNG to {png_target}")
                 return None
             
-            logger.info(f"Generated normalized BMP at: {bmp_target}")
-            return bmp_target
+            logger.info(f"Generated normalized PNG at: {png_target}")
+            return png_target
         except Exception as ex:
-            logger.error(f"Failed to normalize to BMP: {ex}")
+            logger.error(f"Failed to normalize to PNG: {ex}")
             return None
 
     def capture_preview(self):

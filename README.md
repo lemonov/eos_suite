@@ -7,11 +7,12 @@ A comprehensive, containerized photography studio designed for Canon EOS cameras
 ## 🌟 Key Features
 
 -   **📸 Professional Tethered Control**: Complete control over your Canon EOS camera settings (ISO, Aperture, Shutter Speed, Focus) directly from the web interface.
--   **📑 Automated Z-Stacking**: Precision focus stacking with sub-step control for high-resolution macro photography.
--   **🖼️ Real-time Live View**: High-performance live preview for perfect framing and focus adjustment.
--   **⚡ High-Performance Processing**: Backend powered by Python with `gphoto2` for native hardware communication and `OpenCV` for image processing.
--   **🖥️ Modern Web UI**: A sleek, responsive dashboard built with Next.js and TypeScript, designed for professional photographers.
--   **🐳 Containerized Deployment**: Fully portable environment using Podman/Docker, ensuring consistent performance across systems.
+-   **📑 Automated Z-Stacking**: Precision focus stacking with sub-step control, integrating advanced OpenCV blending algorithms to merge deep focus macro shots flawlessly.
+-   **🖼️ True Streaming Live View**: High-performance HTTP MJPEG live stream backend that can smoothly expand into immersive, non-obstructive full-screen portals for pristine focus checks.
+-   **🎨 Infinite Canvas Compositions**: A full creative suite featuring movable layers, opacity dialing, varied blend modes (Screen, Multiply, Overlay), image flipping, composite Gallery exports, and robust JSON project state saving & loading.
+-   **⚡ High-Performance Processing & Raw Translation**: A backend securely anchored by Python and `gphoto2` that intelligently converts `.cr2` RAW camera formats into lossless, optimized, web-ready PNGs dynamically via OpenCV.
+-   **🖥️ Modern Web UI**: A sleek, responsive dashboard built with Next.js and TypeScript, giving you quick Lighttable previews of your assets and granular control.
+-   **🐳 Containerized Deployment**: Fully portable environment using Podman/Docker, ensuring consistent performance, auto-healing backgrounds, and network ease across systems.
 
 ## 🛠️ Tech Stack
 
@@ -51,14 +52,14 @@ Your photography studio is now live!
 ## 🛠️ Technical Architecture
 
 - **Backend (Python 3.x)**: 
-  - Integrated with **FastAPI** for high-concurrency API requests.
-  - Native **GPhoto2** bindings for deep camera control level access.
-  - **OpenCV** & **RawPy** for high-performance raw image processing.
-  - **Stacking Engine**: Custom integration of Z-stacking algorithms for maximized depth of field.
-- **Frontend (Next.js 15)**: 
-  - Modern dashboard built with **React** and **TypeScript**.
-  - Real-time live view streaming and dynamic focus management.
-  - Professional UI/UX inspired by darktable and Lightroom.
+  - Integrated with **FastAPI** for high-concurrency API requests, including an asynchronous background `yield` generator for continuous MJPEG Live View bridging.
+  - Native **GPhoto2** bindings for deep camera control level access that maintains singular state threads.
+  - **OpenCV** & **RawPy** algorithms handling automatic backend image normalization to compressed lossless formats, generating swift Lighttable interactions.
+  - **Stacking Engine**: Custom integration of Z-stacking compilation binaries for maximized depth of field processing.
+- **Frontend (Next.js 16)**: 
+  - Modern dashboard built with **React** and **TypeScript** leveraging Context Hooks, Ref arrays, and portal-driven DOM mutations.
+  - Interactive **Konva.js** powered Canvas engine supporting transform selections.
+  - Professional UI/UX inspired by darktable and Lightroom with dark-mode optimized aesthetics.
 
 ## ⚠️ Troubleshooting
 
