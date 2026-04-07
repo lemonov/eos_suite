@@ -81,7 +81,7 @@ export default function Stacker({ images, onStackComplete }: StackerProps) {
             className={`cursor-pointer group relative bg-black/40 border transition-all rounded-sm aspect-square overflow-hidden flex flex-col ${selected.includes(img.name) ? 'border-dark-accent ring-2 ring-dark-accent/20' : 'border-white/5 hover:border-white/20'}`}
           >
             <div className="relative flex-1 bg-black/20 min-h-0">
-              <img src={`http://localhost:8000${img.preview_url || img.url}`} className="object-cover w-full h-full grayscale group-hover:grayscale-0 transition-all duration-500" alt={img.name} />
+              <img src={`http://localhost:8000${img.url}`} className="object-cover w-full h-full grayscale group-hover:grayscale-0 transition-all duration-500" alt={img.name} />
               
               <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded-xs text-[8px] font-bold uppercase bg-blue-600/80 text-white z-10">
                 RAW

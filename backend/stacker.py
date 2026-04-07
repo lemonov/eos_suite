@@ -54,9 +54,9 @@ class FocusStacker:
 
             # 3. Run focus-stack
             logger.info(f"Running focus-stack on {len(processed_paths)} images...")
-            # Enforce .bmp extension
-            if not output_filename.lower().endswith(".bmp"):
-                output_filename = os.path.splitext(output_filename)[0] + ".bmp"
+            # Enforce .png extension
+            if not output_filename.lower().endswith(".png"):
+                output_filename = os.path.splitext(output_filename)[0] + ".png"
             
             output_path = os.path.join(self.output_dir, output_filename)
             

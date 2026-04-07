@@ -1,8 +1,8 @@
-# EOS Photography Suite
+# Micro EOS Suite
 
 ![EOS Suite Logo](assets/logo.png)
 
-A comprehensive, containerized photography studio designed for Canon EOS cameras. **EOS Photography Suite** bridges the gap between hardware and high-end image processing, offering a streamlined workflow for tethered shooting and automated focus stacking.
+A comprehensive, containerized photography studio designed for Canon EOS cameras. **Micro EOS Suite** bridges the gap between hardware and high-end image processing, offering a streamlined workflow for tethered shooting and automated focus stacking.
 
 ## 🌟 Key Features
 
@@ -37,10 +37,13 @@ pkill -f gvfs-gphoto2-volume-monitor
 ```
 
 ### 🐳 3. Deployment
-The easiest way to run the stack is using **Podman Compose** (or Docker Compose):
+The easiest way to run the stack is using the provided start script, which utilizes **Podman Compose**:
 ```bash
-# Start the entire suite
-podman-compose up --build
+# Start the entire suite interactively or in detached mode
+./start.sh
+
+# To stop the suite, simply run:
+./stop.sh
 ```
 
 ### 🌍 4. Launch the Dashboard
@@ -59,7 +62,6 @@ Your photography studio is now live!
 - **Frontend (Next.js 16)**: 
   - Modern dashboard built with **React** and **TypeScript** leveraging Context Hooks, Ref arrays, and portal-driven DOM mutations.
   - Interactive **Konva.js** powered Canvas engine supporting transform selections.
-  - Professional UI/UX inspired by darktable and Lightroom with dark-mode optimized aesthetics.
 
 ## ⚠️ Troubleshooting
 
@@ -68,6 +70,11 @@ Your photography studio is now live!
 | **"Could not claim USB device"** | Ensure no other app (Darktable, GNOME Files) is using the camera. Run the `pkill` command above. |
 | **"Camera not detected"** | Check USB connection and ensure camera is powered on. Try `gphoto2 --auto-detect` inside the container. |
 | **"Live View Lag"** | Ensure you are using a USB 3.0 port and a high-quality cable. |
+
+---
+
+## ⭐️ Credits
+- Focus Stacking functionality powered by algorithms inspired by [focus-stack](https://github.com/PetteriAimonen/focus-stack).
 
 ---
 *Built as a professional workstation for macro and studio photographers.*

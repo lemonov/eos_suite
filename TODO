@@ -1,2 +1,1 @@
-1. Rename tabs: Lighttable -> Take pictures, Stacker -> Stack, Canvas -> Stitch
-2. Add tab that will allow for some simple modifications of the image, like brightness, contrast, saturation, crop, rotation, etc. This should be done in a non-destructive way, so that the original image is not modified.
+1. The live view 

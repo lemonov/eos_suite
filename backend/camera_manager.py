@@ -7,22 +7,34 @@ import cv2
 import numpy as np
 import threading
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 class CameraManager:
-    def __init__(self, storage_path="/data/raw"):
+    def __init__(self, base_data_path="/data"):
         self.camera = None
-        self.storage_path = storage_path
-        self.previews_path = "/data/previews"
-        self.normalized_path = "/data/normalized"
+        self.base_data_path = base_data_path
         self._lock = threading.Lock()
-        if not os.path.exists(self.storage_path):
-            os.makedirs(self.storage_path)
-        if not os.path.exists(self.previews_path):
-            os.makedirs(self.previews_path)
-        if not os.path.exists(self.normalized_path):
-            os.makedirs(self.normalized_path)
+        
+        self.session_date = None
+        self.session_folder = None
+        self.storage_path = None
+        self.previews_path = None
+        self.normalized_path = None
+        
+    def _ensure_session_directories(self):
+        now = time.localtime()
+        date_str = time.strftime("%Y_%m_%d", now)
+        if self.session_date != date_str:
+            self.session_date = date_str
+            self.session_folder = time.strftime("%H_%M_%S", now)
+            
+            base = os.path.join(self.base_data_path, self.session_date, self.session_folder)
+            self.storage_path = os.path.join(base, "raw")
+            self.previews_path = os.path.join(base, "previews")
+            
+            os.makedirs(self.storage_path, exist_ok=True)
+            os.makedirs(self.previews_path, exist_ok=True)
 
     def _ensure_connected(self):
         """Connect to camera if not already connected. Thread-safe."""
@@ -54,6 +66,7 @@ class CameraManager:
 
     def capture_image(self):
         with self._lock:
+            self._ensure_session_directories()
             # Force fresh connection for capture
             self._release()
             if not self._ensure_connected():
@@ -99,21 +112,33 @@ class CameraManager:
                     
                     logger.info(f"Downloaded image to: {target} ({file_size} bytes)")
                     
-                    # Generate PNG normalized version
-                    normalized_path = self._normalize_to_png(target)
-                    if normalized_path:
-                        logger.info(f"Normalized PNG ready: {normalized_path}")
-                    else:
-                        logger.warning(f"PNG normalization failed for {target}")
-
-                    # Generate preview if it's a RAW file
                     if target.lower().endswith(".cr2"):
-                        preview_path = self._generate_jpg_preview(target)
-                        if preview_path:
-                            logger.info(f"Preview ready: {preview_path}")
-                        else:
-                            logger.warning(f"Preview generation failed for {target}, but RAW file is saved")
-                    
+                        try:
+                            logger.info(f"Converting {target} native raw to .png...")
+                            with rawpy.imread(target) as raw:
+                                rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True, bright=1.0)
+                                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                                png_target = os.path.splitext(target)[0] + ".png"
+                                cv2.imwrite(png_target, bgr)
+                            os.remove(target)
+                            target = png_target
+                            logger.info(f"Successfully transcoded to {target}")
+                        except Exception as e:
+                            logger.error(f"Failed converting CR2 to BMP: {e}")
+                    else:
+                        try:
+                            # Also ensure JPGs are saved as PNG
+                            logger.info(f"Converting native JPG to .png...")
+                            img = cv2.imread(target)
+                            if img is not None:
+                                png_target = os.path.splitext(target)[0] + ".png"
+                                cv2.imwrite(png_target, img)
+                                os.remove(target)
+                                target = png_target
+                                logger.info(f"Successfully transcoded to {target}")
+                        except Exception as e:
+                            logger.error(f"Failed converting format to PNG: {e}")
+                            
                     return target
                 except gp.GPhoto2Error as ex:
                     logger.error(f"Capture attempt {attempt+1}/3 failed: {ex}")
@@ -127,71 +152,11 @@ class CameraManager:
             logger.error("All capture attempts failed")
             return None
 
-    def _generate_jpg_preview(self, raw_path):
-        """Generate a JPEG preview from a RAW file. Called while lock is held."""
-        try:
-            logger.info(f"Generating JPG preview for {raw_path}")
-            with rawpy.imread(raw_path) as raw:
-                rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True, bright=1.0)
-                
-                # Resize to smaller resolution (max 1024px)
-                h, w = rgb.shape[:2]
-                max_dim = 1024
-                if w > max_dim or h > max_dim:
-                    scale = max_dim / max(h, w)
-                    new_w, new_h = int(w * scale), int(h * scale)
-                    rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                
-                base_name = os.path.basename(raw_path)
-                preview_name = os.path.splitext(base_name)[0] + ".jpg"
-                preview_target = os.path.join(self.previews_path, preview_name)
-                
-                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                success = cv2.imwrite(preview_target, bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                if not success:
-                    logger.error(f"Failed to write JPG preview to {preview_target}")
-                    return None
-                
-                logger.info(f"Generated JPG preview at: {preview_target}")
-                return preview_target
-        except Exception as ex:
-            logger.error(f"Failed to generate JPG preview: {ex}")
-            return None
 
-    def _normalize_to_png(self, input_path):
-        """Convert any supported image file to PNG format in /data/normalized."""
-        try:
-            logger.info(f"Normalizing {input_path} to PNG")
-            base_name = os.path.basename(input_path)
-            png_name = os.path.splitext(base_name)[0] + ".png"
-            png_target = os.path.join(self.normalized_path, png_name)
-
-            if input_path.lower().endswith(".cr2"):
-                with rawpy.imread(input_path) as raw:
-                    rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True, bright=1.0)
-            else:
-                img = cv2.imread(input_path)
-                if img is None:
-                    logger.error(f"Failed to read image with OpenCV: {input_path}")
-                    return None
-                rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # Save as PNG using OpenCV (expects BGR)
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            # Default compression is 3 for PNG, which is a good balance
-            success = cv2.imwrite(png_target, bgr)
-            if not success:
-                logger.error(f"Failed to write PNG to {png_target}")
-                return None
-            
-            logger.info(f"Generated normalized PNG at: {png_target}")
-            return png_target
-        except Exception as ex:
-            logger.error(f"Failed to normalize to PNG: {ex}")
-            return None
 
     def capture_preview(self):
         with self._lock:
+            self._ensure_session_directories()
             if not self._ensure_connected():
                 return None
             try:
@@ -224,12 +189,84 @@ class CameraManager:
             try:
                 config = self.camera.get_config()
                 child = config.get_child_by_name(name)
-                child.set_value(value)
+                child.set_value(str(value))
                 self.camera.set_config(config)
                 return True
             except gp.GPhoto2Error as ex:
                 logger.error(f"Failed to set config {name} to {value}: {ex}")
                 return False
+
+    def get_config_options(self, name):
+        with self._lock:
+            if not self._ensure_connected():
+                return []
+            try:
+                config = self.camera.get_config()
+                child = config.get_child_by_name(name)
+                return [str(c) for c in child.get_choices()]
+            except Exception as e:
+                logger.error(f"Failed to get options for {name}: {e}")
+                return []
+
+    def auto_probe_exposure(self):
+        """Try to find optimal exposure by seeking most even color distribution (histogram)."""
+        # 1. Set high ISO
+        iso_options = self.get_config_options("iso")
+        target_iso = "3200" if "3200" in iso_options else (iso_options[-1] if iso_options else "1600")
+        self.set_config("iso", target_iso)
+        
+        # 2. Get shutterspeeds
+        ss_options = self.get_config_options("shutterspeed")
+        if not ss_options:
+            return False
+            
+        best_ss = ss_options[len(ss_options)//2] 
+        best_score = -float('inf')
+        
+        # Sampling indices - linear scan is slow, but we can do a subset
+        # We'll skip some to be faster but still cover the range
+        step = max(1, len(ss_options) // 10)
+        samples = list(range(0, len(ss_options), step))
+        if (len(ss_options)-1) not in samples:
+            samples.append(len(ss_options)-1)
+        
+        for idx in samples:
+            ss = ss_options[idx]
+            self.set_config("shutterspeed", ss)
+            time.sleep(0.1)
+            preview_path = self.capture_preview()
+            if not preview_path: continue
+            
+            img = cv2.imread(preview_path)
+            if img is None: continue
+            
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # Calculate Histogram characteristics
+            mean = np.mean(gray)
+            median = np.median(gray)
+            std = np.std(gray)
+            
+            # Percent of clipped pixels (first and last bin)
+            clipped_low = np.sum(gray <= 5) / gray.size
+            clipped_high = np.sum(gray >= 250) / gray.size
+            
+            # Score logic: 
+            # 1. Center the median near 128
+            # 2. Maximize standard deviation (even spread)
+            # 3. Heavily penalize clipping at either end
+            score = (std * 0.5) - abs(median - 128) - (clipped_low * 200) - (clipped_high * 200)
+            
+            logger.info(f"Probing SS {ss}: Median {median:.1f}, Std {std:.1f}, Clip L/H {clipped_low:.1%}/{clipped_high:.1%}, Score {score:.1f}")
+            
+            if score > best_score:
+                best_score = score
+                best_ss = ss
+                
+        # Final set
+        self.set_config("shutterspeed", best_ss)
+        logger.info(f"Auto-probe (Histogram) finished. Best SS: {best_ss} at ISO {target_iso}")
+        return {"iso": target_iso, "shutterspeed": best_ss}
 
     def close(self):
         with self._lock:

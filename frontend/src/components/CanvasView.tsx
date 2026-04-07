@@ -173,7 +173,7 @@ export default function CanvasView({ images }: CanvasViewProps) {
     const newImg: CanvasImage = {
       id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       name: img.name,
-      url: `${API_BASE}${img.normalized_url || img.preview_url || img.url}`,
+      url: `${API_BASE}${img.url}`,
       x: 50 + canvasImages.length * 20,
       y: 50 + canvasImages.length * 20,
       width: (img.width && img.width > 0) ? img.width / 4 : 400,
@@ -272,7 +272,7 @@ export default function CanvasView({ images }: CanvasViewProps) {
                 className="group relative h-36 bg-black/40 border border-white/10 rounded cursor-pointer hover:border-dark-accent transition-all overflow-hidden flex flex-col"
             >
               <div className="relative flex-1 bg-black/20 min-h-0">
-                <img src={`${API_BASE}${img.preview_url || img.url}`} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" alt={img.name} />
+                <img src={`${API_BASE}${img.url}`} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" alt={img.name} />
                 <div className={`absolute top-1 left-1 px-1 py-0.5 rounded-xs text-[6px] font-bold uppercase z-10 ${img.type === 'raw' ? 'bg-blue-600/80' : img.type === 'stacked' ? 'bg-purple-600/80' : 'bg-green-600/80'}`}>
                   {img.type}
                 </div>
@@ -488,7 +488,7 @@ export default function CanvasView({ images }: CanvasViewProps) {
           
           <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center">
             <img 
-              src={`${API_BASE}${enlargedImage.normalized_url || enlargedImage.url}`} 
+              src={`${API_BASE}${enlargedImage.url}`} 
               className="max-w-full max-h-[90vh] object-contain" 
               alt={`Fullscreen ${enlargedImage.name}`}
               onClick={(e) => e.stopPropagation()} 

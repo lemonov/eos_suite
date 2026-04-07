@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import List
 import asyncio
 import os
+import shutil
 import uuid
 from PIL import Image
 import logging
@@ -16,7 +17,7 @@ from io import BytesIO
 from camera_manager import CameraManager
 from stacker import FocusStacker
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="EOS Focus Stacking Suite")
@@ -33,7 +34,6 @@ class CORSStaticFiles(StaticFiles):
             logger.error(f"Error serving static file {path}: {e}")
             raise e
 
-# CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,32 +41,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Paths
-RAW_DATA_PATH = "/data/raw"
-PROCESSED_DATA_PATH = "/data/processed"
-NORMALIZED_DATA_PATH = "/data/normalized"
-PREVIEWS_DATA_PATH = "/data/previews"
+BASE_DATA_PATH = "/data"
 
 # Initialize managers
-camera = CameraManager(storage_path=RAW_DATA_PATH)
-stacker = FocusStacker(output_dir=PROCESSED_DATA_PATH)
+camera = CameraManager(base_data_path=BASE_DATA_PATH)
+stacker = FocusStacker(output_dir=BASE_DATA_PATH) # Will be dynamically overridden per request
 
-# Serve static files
-if not os.path.exists(RAW_DATA_PATH):
-    os.makedirs(RAW_DATA_PATH)
-if not os.path.exists(PROCESSED_DATA_PATH):
-    os.makedirs(PROCESSED_DATA_PATH)
+if not os.path.exists(BASE_DATA_PATH):
+    os.makedirs(BASE_DATA_PATH)
 
-if not os.path.exists(NORMALIZED_DATA_PATH):
-    os.makedirs(NORMALIZED_DATA_PATH)
-
-app.mount("/raw", CORSStaticFiles(directory=RAW_DATA_PATH), name="raw")
-app.mount("/processed", CORSStaticFiles(directory=PROCESSED_DATA_PATH), name="processed")
-app.mount("/previews", CORSStaticFiles(directory=PREVIEWS_DATA_PATH), name="previews")
-app.mount("/normalized", CORSStaticFiles(directory=NORMALIZED_DATA_PATH), name="normalized")
+app.mount("/data_files", CORSStaticFiles(directory=BASE_DATA_PATH), name="data_files")
 
 class StackRequest(BaseModel):
-    image_names: List[str]
+    image_names: List[str] # Now relative paths like 2026_04_06/12_05_30/raw/IMG_xxx.cr2
     output_name: str
     flags: List[str] = []
 
@@ -83,7 +70,8 @@ async def camera_status():
 async def camera_preview():
     path = camera.capture_preview()
     if path:
-        return {"url": f"/previews/{os.path.basename(path)}?t={int(time.time()*1000)}"}
+        rel_path = os.path.relpath(path, BASE_DATA_PATH)
+        return {"url": f"/data_files/{rel_path}?t={int(time.time()*1000)}"}
     raise HTTPException(status_code=500, detail="Preview failed")
 
 @app.get("/camera/stream")
@@ -93,7 +81,6 @@ async def camera_stream(request: Request):
             if await request.is_disconnected():
                 break
             
-            # Using asyncio.to_thread to not block the async event loop
             path = await asyncio.to_thread(camera.capture_preview)
             if path:
                 try:
@@ -104,7 +91,6 @@ async def camera_stream(request: Request):
                 except Exception as e:
                     logger.error(f"Error reading preview file: {e}")
             
-            # Brief pause to allow other threads to acquire the lock
             await asyncio.sleep(0.05)
 
     return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -113,149 +99,226 @@ async def camera_stream(request: Request):
 async def capture():
     path = camera.capture_image()
     if path:
-        filename = os.path.basename(path)
-        result = {"filename": filename, "url": f"/raw/{filename}"}
-        # Add normalized PNG URL
-        png_name = os.path.splitext(filename)[0] + ".png"
-        result["normalized_url"] = f"/normalized/{png_name}"
-        
-        if filename.lower().endswith(".cr2"):
-            preview_name = os.path.splitext(filename)[0] + ".jpg"
-            result["preview_url"] = f"/previews/{preview_name}"
-        return result
+        rel_path = os.path.relpath(path, BASE_DATA_PATH)
+        return {"filename": rel_path, "url": f"/data_files/{rel_path}"}
     raise HTTPException(status_code=500, detail="Capture failed")
+
+@app.post("/camera/probe")
+async def probe_exposure():
+    result = await asyncio.to_thread(camera.auto_probe_exposure)
+    if result:
+        return result
+    raise HTTPException(status_code=500, detail="Exposure probe failed")
 
 @app.get("/images")
 async def list_images():
-    raw_files = sorted([f for f in os.listdir(RAW_DATA_PATH) if os.path.isfile(os.path.join(RAW_DATA_PATH, f))], reverse=True)
-    processed_all = sorted([f for f in os.listdir(PROCESSED_DATA_PATH) if os.path.isfile(os.path.join(PROCESSED_DATA_PATH, f))], reverse=True)
+    raw_list = []
+    stacked_list = []
+    canvas_list = []
     
-    # Categorize processed images
-    stacked_files = [f for f in processed_all if f.startswith("stack_")]
-    canvas_files = [f for f in processed_all if not f.startswith("stack_")]
-
     def get_dims(path):
         try:
             with Image.open(path) as img:
                 return img.width, img.height
         except:
-            return 1920, 1080 # Fallback
+            return 1920, 1080
 
-    raw_list = []
-    for f in raw_files:
-        full_path = os.path.join(RAW_DATA_PATH, f)
-        img_info = {"name": f, "url": f"/raw/{f}", "width": 0, "height": 0}
+    for root, dirs, files in os.walk(BASE_DATA_PATH):
+        # Sort files by modification time descending
+        files_with_mtime = [(f, os.path.getmtime(os.path.join(root, f))) for f in files]
+        files_with_mtime.sort(key=lambda x: x[1], reverse=True)
         
-        if f.lower().endswith(".cr2"):
-            preview_name = os.path.splitext(f)[0] + ".jpg"
-            preview_path = os.path.join(PREVIEWS_DATA_PATH, preview_name)
-            if os.path.exists(preview_path):
-                img_info["preview_url"] = f"/previews/{preview_name}"
-                w, h = get_dims(preview_path)
-                img_info["width"], img_info["height"] = w, h
-        else:
-            w, h = get_dims(full_path)
-            img_info["width"], img_info["height"] = w, h
-        
-        # Check for normalized PNG
-        png_name = os.path.splitext(f)[0] + ".png"
-        if os.path.exists(os.path.join(NORMALIZED_DATA_PATH, png_name)):
-            img_info["normalized_url"] = f"/normalized/{png_name}"
-            # Use PNG as preview if it exists and no other preview is set
-            if "preview_url" not in img_info:
-                img_info["preview_url"] = img_info["normalized_url"]
-                # Update dims from PNG if still 0
-                if img_info["width"] == 0:
-                   w, h = get_dims(os.path.join(NORMALIZED_DATA_PATH, png_name))
-                   img_info["width"], img_info["height"] = w, h
+        for f, mtime in files_with_mtime:
+            full_path = os.path.join(root, f)
+            rel_path = os.path.relpath(full_path, BASE_DATA_PATH) 
+            parts = rel_path.split(os.sep)
             
-        raw_list.append(img_info)
-    
-    stacked_list = []
-    for f in stacked_files:
-        full_path = os.path.join(PROCESSED_DATA_PATH, f)
-        w, h = get_dims(full_path)
-        stacked_list.append({"name": f, "url": f"/processed/{f}", "width": w, "height": h, "type": "stacked"})
+            if len(parts) >= 3:
+                session_group = f"{parts[0]}/{parts[1]}"  # e.g. 2026_04_06/12_05_30
+                folder_type = parts[-2]
+            elif len(parts) == 2:
+                session_group = "Legacy"
+                folder_type = parts[0]
+            else:
+                continue
 
-    canvas_list = []
-    for f in canvas_files:
-        full_path = os.path.join(PROCESSED_DATA_PATH, f)
-        w, h = get_dims(full_path)
-        canvas_list.append({"name": f, "url": f"/processed/{f}", "width": w, "height": h, "type": "processed"})
-        
+            if folder_type not in ["raw", "processed"]:
+                continue
+            
+            mtime_int = int(mtime)
+            
+            if folder_type == "raw":
+                w, h = get_dims(full_path)
+                img_info = {
+                    "name": rel_path,
+                    "url": f"/data_files/{rel_path}?t={mtime_int}", 
+                    "width": w, "height": h,
+                    "session": session_group,
+                    "type": "raw",
+                }
+                raw_list.append(img_info)
+
+            elif folder_type == "processed":
+                w, h = get_dims(full_path)
+                if f.startswith("stack_"):
+                    stacked_list.append({
+                        "name": rel_path, 
+                        "url": f"/data_files/{rel_path}?t={mtime_int}", 
+                        "width": w, "height": h, 
+                        "type": "stacked",
+                        "session": session_group
+                    })
+                else:
+                    canvas_list.append({
+                        "name": rel_path, 
+                        "url": f"/data_files/{rel_path}?t={mtime_int}", 
+                        "width": w, "height": h, 
+                        "type": "processed",
+                        "session": session_group
+                    })
+
+    # Sort all globally
+    # They are already sorted per dir, but we must sort the flattened lists
+    def extract_time(url):
+        try:
+            return int(url.split("?t=")[1])
+        except:
+            return 0
+    
+    raw_list.sort(key=lambda x: extract_time(x["url"]), reverse=True)
+    stacked_list.sort(key=lambda x: extract_time(x["url"]), reverse=True)
+    canvas_list.sort(key=lambda x: extract_time(x["url"]), reverse=True)
+
     return {
         "raw": raw_list,
         "stacked": stacked_list,
         "processed": canvas_list
     }
 
-@app.delete("/images/{img_type}/{filename}")
-async def delete_image(img_type: str, filename: str):
-    if img_type == "raw":
-        base_path = RAW_DATA_PATH
-    elif img_type in ["processed", "stacked"]:
-        base_path = PROCESSED_DATA_PATH
-    else:
-        raise HTTPException(status_code=400, detail="Invalid image type")
-        
-    full_path = os.path.join(base_path, filename)
+@app.delete("/images/{filepath:path}")
+async def delete_image(filepath: str):
+    full_path = os.path.join(BASE_DATA_PATH, filepath)
     if os.path.exists(full_path):
         os.remove(full_path)
-        # Also remove preview if it exists
-        preview_name = os.path.splitext(filename)[0] + ".jpg"
-        preview_path = os.path.join(PREVIEWS_DATA_PATH, preview_name)
-        if os.path.exists(preview_path):
-            os.remove(preview_path)
         return {"status": "ok"}
     raise HTTPException(status_code=404, detail="Image not found")
+
+@app.post("/images/duplicate/{filepath:path}")
+async def duplicate_image(filepath: str):
+    full_path = os.path.join(BASE_DATA_PATH, filepath)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    base_name = os.path.basename(full_path)
+    name_no_ext, ext = os.path.splitext(base_name)
+    parent_dir = os.path.dirname(full_path)
+    
+    counter = 1
+    while True:
+        new_name = f"{name_no_ext}_copy{counter}{ext}"
+        new_path = os.path.join(parent_dir, new_name)
+        if not os.path.exists(new_path):
+            break
+        counter += 1
+    
+    shutil.copy2(full_path, new_path)
+    rel_path = os.path.relpath(new_path, BASE_DATA_PATH)
+    return {"status": "ok", "filename": rel_path, "url": f"/data_files/{rel_path}"}
+
+@app.post("/images/overwrite/{filepath:path}")
+async def overwrite_image(filepath: str, data: dict = Body(...)):
+    full_path = os.path.join(BASE_DATA_PATH, filepath)
+    
+    image_data = data.get("image")
+    if not image_data or "," not in image_data:
+        raise HTTPException(status_code=400, detail="Invalid image data")
+
+    try:
+        header, encoded = image_data.split(",", 1)
+        decoded = base64.b64decode(encoded)
+        
+        img = Image.open(BytesIO(decoded))
+        
+        base_name = os.path.basename(full_path)
+        
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        ext = os.path.splitext(base_name)[1].lower()
+        if ext in ['.png', '.bmp']:
+            fmt = "PNG"
+        elif ext in ['.jpg', '.jpeg']:
+            fmt = "JPEG"
+        else:
+            fmt = "PNG"
+            
+        if fmt == "JPEG" and img.mode == 'RGBA':
+            img = img.convert('RGB')
+        
+        img.save(full_path, fmt)
+
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Overwrite failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/canvas/save")
 async def save_canvas(data: dict = Body(...)):
     image_data = data.get("image")
     if not image_data or "," not in image_data:
-        logger.error("Invalid image data received in save_canvas: missing data header")
         raise HTTPException(status_code=400, detail="Invalid image data")
         
     try:
         header, encoded = image_data.split(",", 1)
-        logger.info(f"Received canvas save request: Header: {header}, Data length: {len(encoded)} bytes")
         decoded = base64.b64decode(encoded)
         
-        filename = f"canvas_{int(time.time())}.png"
-        full_path = os.path.join(PROCESSED_DATA_PATH, filename)
+        session_date = camera.session_date or time.strftime("%Y_%m_%d")
+        session_folder = camera.session_folder or time.strftime("%H_%M_%S")
+        processed_dir = os.path.join(BASE_DATA_PATH, session_date, session_folder, "processed")
+        os.makedirs(processed_dir, exist_ok=True)
         
-        logger.info(f"Saving canvas to {full_path}")
-        # Use PIL to save as PNG for reliability
+        filename = f"canvas_{int(time.time())}.png"
+        full_path = os.path.join(processed_dir, filename)
+        
         img = Image.open(BytesIO(decoded))
         img.save(full_path, "PNG")
-        logger.info(f"Canvas save successful: {filename} ({img.width}x{img.height})")
-            
-        return {"status": "ok", "filename": filename, "url": f"/processed/{filename}"}
+        
+        rel_path = os.path.relpath(full_path, BASE_DATA_PATH)
+        return {"status": "ok", "filename": rel_path, "url": f"/data_files/{rel_path}"}
     except Exception as e:
         logger.error(f"Canvas save failed with exception: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stack")
 async def focus_stack(request: StackRequest):
-    input_paths = [os.path.join(RAW_DATA_PATH, name) for name in request.image_names]
-    # Check if files exist
+    input_paths = [os.path.join(BASE_DATA_PATH, name) for name in request.image_names]
     for p in input_paths:
         if not os.path.exists(p):
-            raise HTTPException(status_code=404, detail=f"Image not found: {os.path.basename(p)}")
+            raise HTTPException(status_code=404, detail=f"Image not found: {p}")
+            
+    # Save into the same session folder as the first image
+    if len(request.image_names) > 0:
+        parent_dir = os.path.dirname(os.path.dirname(input_paths[0]))
+        processed_dir = os.path.join(parent_dir, "processed")
+        os.makedirs(processed_dir, exist_ok=True)
+        stacker.output_dir = processed_dir
+    else:
+        # Fallback
+        stacker.output_dir = os.path.join(BASE_DATA_PATH, "processed")
+        os.makedirs(stacker.output_dir, exist_ok=True)
     
     success, output_path, logs = stacker.stack(input_paths, request.output_name, request.flags)
     
     if success and output_path:
+        rel_path = os.path.relpath(output_path, BASE_DATA_PATH)
         return {
             "status": "ok",
-            "filename": os.path.basename(output_path), 
-            "url": f"/processed/{os.path.basename(output_path)}",
+            "filename": rel_path, 
+            "url": f"/data_files/{rel_path}",
             "logs": logs
         }
     
-    # If failed, return logs in the error detail
     raise HTTPException(status_code=500, detail={
         "message": "Stacking failed",
         "logs": logs
@@ -266,14 +329,19 @@ async def get_camera_config(name: str):
     value = camera.get_config(name)
     if value is not None:
         return {"name": name, "value": value}
-    raise HTTPException(status_code=404, detail="Config not found or camera disconnected")
+    raise HTTPException(status_code=404, detail="Config not found")
 
 @app.post("/camera/config/{name}")
-async def set_camera_config(name: str, value: str = Body(..., embed=True)):
-    success = camera.set_config(name, value)
+async def set_camera_config(name: str, data: dict = Body(...)):
+    success = camera.set_config(name, data.get("value"))
     if success:
         return {"status": "ok"}
-    raise HTTPException(status_code=500, detail="Failed to set config")
+    raise HTTPException(status_code=500, detail=f"Failed to set config {name}")
+
+@app.get("/camera/options/{name}")
+async def get_camera_options(name: str):
+    options = camera.get_config_options(name)
+    return {"options": options}
 
 if __name__ == "__main__":
     import uvicorn

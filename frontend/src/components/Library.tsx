@@ -1,16 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, Trash2, Heart, Search, Maximize2, Minimize2 } from "lucide-react";
+import { Copy, Trash2, Heart, Search, Maximize2, Minimize2, ChevronDown, ChevronRight } from "lucide-react";
 
 interface ImageInfo {
   name: string;
   url: string;
-  preview_url?: string;
-  normalized_url?: string;
   type: "raw" | "processed" | "stacked";
   width?: number;
   height?: number;
+  session?: string;
 }
 
 interface ImageCardProps {
@@ -22,10 +21,10 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
   const [retryCount, setRetryCount] = useState(0);
   const [isEnlarged, setIsEnlarged] = useState(false);
 
-  const handleDelete = async (type: string, name: string) => {
+  const handleDelete = async (name: string) => {
     if (!confirm(`Delete ${name}?`)) return;
     try {
-      const res = await fetch(`http://localhost:8000/images/${type}/${name}`, {
+      const res = await fetch(`http://localhost:8000/images/${name}`, {
         method: "DELETE"
       });
       if (res.ok) {
@@ -36,7 +35,22 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
     }
   };
 
-  const imageUrl = `http://localhost:8000${img.preview_url || img.url}${retryCount > 0 ? `?v=${retryCount}` : ""}`;
+  const handleDuplicate = async (img: ImageInfo) => {
+    try {
+      const res = await fetch(`http://localhost:8000/images/duplicate/${img.name}`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        onRefresh && onRefresh();
+      } else {
+        alert("Duplicate failed: " + (await res.json()).detail);
+      }
+    } catch (e) {
+      alert("Duplicate failed due to error");
+    }
+  };
+
+  const imageUrl = `http://localhost:8000${img.url}${retryCount > 0 ? `&v=${retryCount}` : ""}`;
 
   return (
     <div className="group relative bg-[#1a1a1a] border border-white/5 p-1 transition-all hover:border-dark-accent/40 shadow-xl overflow-hidden rounded-sm aspect-square flex flex-col">
@@ -61,9 +75,9 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
              <Maximize2 size={14} />
            </button>
            <button className="p-1 hover:text-dark-accent"><Heart size={14} /></button>
-           <button className="p-1 hover:text-dark-accent ml-auto"><Copy size={14} /></button>
+           <button className="p-1 hover:text-dark-accent ml-auto" onClick={(e) => { e.stopPropagation(); handleDuplicate(img); }}><Copy size={14} /></button>
            <button 
-            onClick={(e) => { e.stopPropagation(); handleDelete(img.type, img.name); }}
+            onClick={(e) => { e.stopPropagation(); handleDelete(img.name); }}
             className="p-1 hover:text-red-500"
            >
              <Trash2 size={14} />
@@ -96,11 +110,10 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
           </button>
           
           <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center">
-            {/* We show the full-res version if available, otherwise the preview */}
-            <img 
-              src={`http://localhost:8000${img.normalized_url || img.url}`} 
-              className="max-w-full max-h-[90vh] object-contain" 
+            <img
+              src={`http://localhost:8000${img.url}`}
               alt={`Fullscreen ${img.name}`}
+              className="max-w-full max-h-[85vh] object-contain border border-white/20"
               onClick={(e) => e.stopPropagation()} 
             />
             <div className="mt-4 px-4 py-2 bg-black/50 rounded flex gap-4 text-xs font-bold items-center sticky bottom-0">
@@ -116,11 +129,22 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
 
 interface LibraryProps {
   images: {
-    raw: any[];
-    processed: any[];
-    stacked: any[];
+    raw: ImageInfo[];
+    processed: ImageInfo[];
+    stacked: ImageInfo[];
   };
   onRefresh: () => void;
+}
+
+function formatSessionName(session: string) {
+  if (!session || session === "Legacy" || session === "Unknown Date" || !session.includes('/')) return session || "Unknown Date";
+  const parts = session.split('/');
+  const dateParts = parts[0].split('_'); 
+  const timeParts = parts[1].split('_'); 
+  if (dateParts.length === 3 && timeParts.length === 3) {
+    return `${dateParts[2]}/${dateParts[1]}/${dateParts[0]} ${timeParts[0]}:${timeParts[1]}:${timeParts[2]}`;
+  }
+  return session;
 }
 
 export default function Library({ images, onRefresh }: LibraryProps) {
@@ -140,11 +164,56 @@ export default function Library({ images, onRefresh }: LibraryProps) {
     );
   }
 
+  // Group by Backend Session
+  const groups: Record<string, typeof allImages> = {};
+  
+  allImages.forEach(img => {
+    const sessionKey = img.session || "Unknown Date";
+    if (!groups[sessionKey]) groups[sessionKey] = [];
+    groups[sessionKey].push(img);
+  });
+
+  // Default state initialization inside component
+  const sortedDayKeys = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+  
+  // Set the newest session as open
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    [sortedDayKeys[0]]: true
+  });
+
+  const toggleGroup = (key: string) => {
+    setOpenGroups(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
   return (
-    <div className="p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 animate-in fade-in duration-500">
-      {allImages.map((img, idx) => (
-        <ImageCard key={idx} img={img} onRefresh={onRefresh} />
-      ))}
+    <div className="p-4 space-y-6 animate-in fade-in duration-500">
+      {sortedDayKeys.map(dayKey => {
+        const folderName = formatSessionName(dayKey);
+        const isOpen = openGroups[dayKey] ?? false;
+
+        return (
+          <div key={dayKey} className="border border-white/5 bg-black/20 rounded-md overflow-hidden">
+            <button 
+              onClick={() => toggleGroup(dayKey)}
+              className="w-full flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                {isOpen ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                <span className="text-xs font-bold uppercase tracking-widest">{folderName}</span>
+                <span className="text-[10px] text-white/40 ml-2">({groups[dayKey].length} items)</span>
+              </div>
+            </button>
+            
+            {isOpen && (
+              <div className="p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 bg-[#111]">
+                {groups[dayKey].map((img, idx) => (
+                  <ImageCard key={idx} img={img} onRefresh={onRefresh} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
