@@ -6,6 +6,7 @@ import { Copy, Trash2, Heart, Search, Maximize2, Minimize2, ChevronDown, Chevron
 interface ImageInfo {
   name: string;
   url: string;
+  thumb_url?: string;
   type: "raw" | "processed" | "stacked";
   width?: number;
   height?: number;
@@ -50,19 +51,16 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
     }
   };
 
-  const imageUrl = `http://localhost:8000${img.url}${retryCount > 0 ? `&v=${retryCount}` : ""}`;
+  const API_BASE = "http://localhost:8000";
+  const thumbUrl = img.thumb_url ? `${API_BASE}${img.thumb_url}` : `${API_BASE}${img.url}`;
+  const fullUrl = `${API_BASE}${img.url}`;
 
   return (
     <div className="group relative bg-[#1a1a1a] border border-white/5 p-1 transition-all hover:border-dark-accent/40 shadow-xl overflow-hidden rounded-sm aspect-square flex flex-col">
       <div className="relative flex-1 overflow-hidden bg-black/20">
         <img
-          src={imageUrl}
+          src={thumbUrl}
           alt={img.name}
-          onError={() => {
-            if (retryCount < 3) {
-              setTimeout(() => setRetryCount(retryCount + 1), 1000);
-            }
-          }}
           className="object-cover w-full h-full grayscale transition-all group-hover:grayscale-0 group-hover:scale-105 duration-700"
         />
         {/* Overlay */}
@@ -109,12 +107,11 @@ const ImageCard = ({ img, onRefresh }: ImageCardProps) => {
             <Minimize2 size={24} />
           </button>
           
-          <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center">
-            <img
-              src={`http://localhost:8000${img.url}`}
-              alt={`Fullscreen ${img.name}`}
-              className="max-w-full max-h-[85vh] object-contain border border-white/20"
-              onClick={(e) => e.stopPropagation()} 
+          <div className="relative max-w-5xl max-h-[90vh] w-full flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+            <img 
+              src={fullUrl} 
+              alt={img.name}
+              className="max-w-full max-h-full object-contain shadow-2xl rounded-sm"
             />
             <div className="mt-4 px-4 py-2 bg-black/50 rounded flex gap-4 text-xs font-bold items-center sticky bottom-0">
               <span className="opacity-50 text-white">Filename:</span>

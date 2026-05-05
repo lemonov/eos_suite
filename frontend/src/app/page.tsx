@@ -5,9 +5,8 @@ import Sidebar from "@/components/Sidebar";
 import Library from "@/components/Library";
 import Stacker from "@/components/Stacker";
 import CanvasView from "@/components/CanvasView";
-import AdjustView from "@/components/AdjustView";
 import LivePreview from "@/components/LivePreview";
-import { Layers, Image as ImageIcon, Box, Sliders, Info } from "lucide-react";
+import { Layers, Image as ImageIcon, Box, Info, AlertCircle } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { CanvasProvider } from "@/context/CanvasContext";
@@ -19,6 +18,7 @@ function cn(...inputs: ClassValue[]) {
 export interface ImageInfo {
   name: string;
   url: string;
+  thumb_url?: string;
   type: "raw" | "processed" | "stacked";
   width?: number;
   height?: number;
@@ -34,6 +34,8 @@ interface ImagesState {
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"library" | "stacker" | "canvas" | "adjust">("library");
   const [images, setImages] = useState<ImagesState>({ raw: [], processed: [], stacked: [] });
+  const [conflict, setConflict] = useState(false);
+  const [clientId] = useState(() => Math.random().toString(36).substring(2) + Date.now().toString(36));
 
   const fetchImages = async () => {
     try {
@@ -48,12 +50,44 @@ export default function Home() {
   useEffect(() => {
     fetchImages();
     const interval = setInterval(fetchImages, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    
+    // Heartbeat logic
+    const heartbeat = setInterval(async () => {
+      try {
+        const res = await fetch("http://localhost:8000/health/ping", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_id: clientId })
+        });
+        if (res.status === 409) {
+          setConflict(true);
+        } else if (res.ok && conflict) {
+          setConflict(false);
+        }
+      } catch (e) {
+        // Ignored
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(heartbeat);
+    };
+  }, [clientId, conflict]);
 
   return (
     <CanvasProvider>
-      <main className="flex h-screen w-screen overflow-hidden bg-dark-bg text-dark-text">
+      <main className="flex h-screen w-screen overflow-hidden bg-dark-bg text-dark-text relative">
+        {conflict && (
+          <div className="absolute inset-0 z-[999] bg-black/90 backdrop-blur flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+             <AlertCircle size={48} className="text-red-500 mb-4" />
+             <h2 className="text-xl font-bold uppercase tracking-widest text-white mb-2">Another Instance Active</h2>
+             <p className="text-white/50 max-w-md">
+                The EOS Suite camera service only supports one active client at a time to prevent hardware lockups. 
+                Please close this tab, or close the other active tab to continue.
+             </p>
+          </div>
+        )}
         <div className="flex flex-col w-full h-full overflow-hidden">
           {/* Top Navigation / Module Switcher (Globally Centered) */}
           <div className="flex items-center justify-center h-10 border-b border-dark-border bg-dark-sidebar/50 z-30">
@@ -84,15 +118,6 @@ export default function Home() {
             >
               <Layers size={14} /> Stitch
             </button>
-            <button
-              onClick={() => setActiveTab("adjust")}
-              className={cn(
-                "flex items-center justify-center gap-2 w-40 h-full text-[10px] uppercase tracking-wider font-semibold transition-colors",
-                activeTab === "adjust" ? "text-dark-accent border-b-2 border-dark-accent" : "text-white/40 hover:text-white/60"
-              )}
-            >
-              <Sliders size={14} /> Adjust
-            </button>
           </div>
 
           <div className="flex flex-1 overflow-hidden relative">
@@ -104,7 +129,6 @@ export default function Home() {
               {activeTab === "library" && <Library images={images} onRefresh={fetchImages} />}
               {activeTab === "stacker" && <Stacker images={images} onStackComplete={fetchImages} />}
               {activeTab === "canvas" && <CanvasView images={images} />}
-              {activeTab === "adjust" && <AdjustView images={images} onRefresh={fetchImages} />}
             </div>
 
             {/* Right Sidebar */}

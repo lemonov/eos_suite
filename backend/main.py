@@ -14,6 +14,9 @@ import time
 import base64
 from io import BytesIO
 
+active_client_id = None
+last_ping_time = 0
+
 from camera_manager import CameraManager
 from stacker import FocusStacker
 
@@ -42,6 +45,7 @@ app.add_middleware(
 )
 
 BASE_DATA_PATH = "/data"
+BASE_THUMB_CACHE = os.path.join(BASE_DATA_PATH, ".cache", "thumbnails")
 
 # Initialize managers
 camera = CameraManager(base_data_path=BASE_DATA_PATH)
@@ -49,6 +53,8 @@ stacker = FocusStacker(output_dir=BASE_DATA_PATH) # Will be dynamically overridd
 
 if not os.path.exists(BASE_DATA_PATH):
     os.makedirs(BASE_DATA_PATH)
+if not os.path.exists(BASE_THUMB_CACHE):
+    os.makedirs(BASE_THUMB_CACHE, exist_ok=True)
 
 app.mount("/data_files", CORSStaticFiles(directory=BASE_DATA_PATH), name="data_files")
 
@@ -61,14 +67,41 @@ class StackRequest(BaseModel):
 async def root():
     return {"message": "EOS Focus Stacking Suite API"}
 
+@app.post("/health/ping")
+async def ping(client_id: str = Body(embed=True)):
+    global active_client_id, last_ping_time
+    now = time.time()
+    
+    # If there is an active client and it pinged recently, and this is a different client
+    if active_client_id and active_client_id != client_id and (now - last_ping_time < 5):
+        raise HTTPException(status_code=409, detail="Another client is currently active")
+        
+    active_client_id = client_id
+    last_ping_time = now
+    return {"status": "ok"}
+
+async def camera_idle_task():
+    global last_ping_time
+    while True:
+        await asyncio.sleep(5)
+        # If no client has pinged in 10 seconds, close the camera to release USB lock
+        if time.time() - last_ping_time > 10 and last_ping_time > 0:
+            logger.info("No active clients detected, suspending camera connection...")
+            await asyncio.to_thread(camera.close)
+            last_ping_time = 0 # reset so we don't spam close
+            
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(camera_idle_task())
+
 @app.get("/camera/status")
 async def camera_status():
-    connected = camera.connect()
+    connected = await asyncio.to_thread(camera.connect)
     return {"connected": connected}
 
 @app.get("/camera/preview")
 async def camera_preview():
-    path = camera.capture_preview()
+    path = await asyncio.to_thread(camera.capture_preview)
     if path:
         rel_path = os.path.relpath(path, BASE_DATA_PATH)
         return {"url": f"/data_files/{rel_path}?t={int(time.time()*1000)}"}
@@ -97,7 +130,7 @@ async def camera_stream(request: Request):
 
 @app.post("/camera/capture")
 async def capture():
-    path = camera.capture_image()
+    path = await asyncio.to_thread(camera.capture_image)
     if path:
         rel_path = os.path.relpath(path, BASE_DATA_PATH)
         return {"filename": rel_path, "url": f"/data_files/{rel_path}"}
@@ -124,6 +157,9 @@ async def list_images():
             return 1920, 1080
 
     for root, dirs, files in os.walk(BASE_DATA_PATH):
+        # Prune hidden directories in-place (like .cache, .thumbnails) from the walk
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        
         # Sort files by modification time descending
         files_with_mtime = [(f, os.path.getmtime(os.path.join(root, f))) for f in files]
         files_with_mtime.sort(key=lambda x: x[1], reverse=True)
@@ -134,7 +170,7 @@ async def list_images():
             parts = rel_path.split(os.sep)
             
             if len(parts) >= 3:
-                session_group = f"{parts[0]}/{parts[1]}"  # e.g. 2026_04_06/12_05_30
+                session_group = parts[0]  # Just the date (YYYY_MM_DD)
                 folder_type = parts[-2]
             elif len(parts) == 2:
                 session_group = "Legacy"
@@ -145,16 +181,21 @@ async def list_images():
             if folder_type not in ["raw", "processed"]:
                 continue
             
+            if f.lower().endswith(".cr2"):
+                continue
+            
             mtime_int = int(mtime)
             
             if folder_type == "raw":
                 w, h = get_dims(full_path)
                 img_info = {
                     "name": rel_path,
-                    "url": f"/data_files/{rel_path}?t={mtime_int}", 
-                    "width": w, "height": h,
+                    "url": f"/data_files/{rel_path}",
+                    "thumb_url": f"/images/thumb/{rel_path}",
+                    "type": folder_type,
                     "session": session_group,
-                    "type": "raw",
+                    "width": w,
+                    "height": h
                 }
                 raw_list.append(img_info)
 
@@ -290,6 +331,134 @@ async def save_canvas(data: dict = Body(...)):
         logger.error(f"Canvas save failed with exception: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def generate_thumb(full_path, thumb_path):
+    with Image.open(full_path) as img:
+        # Maintain aspect ratio, max width 400
+        w, h = img.size
+        new_w = 400
+        new_h = int(h * (new_w / w))
+        img.thumbnail((new_w, new_h))
+        # Convert RGBA to RGB if needed for JPEG
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.save(thumb_path, "JPEG", quality=85)
+
+@app.get("/images/thumb/{filepath:path}")
+async def get_thumbnail(filepath: str):
+    full_path = os.path.join(BASE_DATA_PATH, filepath)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Original image not found")
+    
+    thumb_path = os.path.join(BASE_THUMB_CACHE, filepath)
+    # Ensure JPEG for thumbs
+    thumb_path = os.path.splitext(thumb_path)[0] + ".jpg"
+    
+    # Run a quick check on cache size occasionally (e.g. 1% of requests)
+    import random
+    if random.random() < 0.01:
+        asyncio.create_task(cleanup_thumbnails())
+        
+    if not os.path.exists(thumb_path):
+        try:
+            os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+            await asyncio.to_thread(generate_thumb, full_path, thumb_path)
+        except Exception as e:
+            logger.error(f"Thumbnail generation failed: {e}")
+            raise HTTPException(status_code=500, detail="Thumbnail creation failed")
+
+    from starlette.responses import FileResponse
+    return FileResponse(thumb_path)
+
+@app.post("/images/thumb/clear")
+async def clear_thumbnail_cache():
+    try:
+        if os.path.exists(BASE_THUMB_CACHE):
+            shutil.rmtree(BASE_THUMB_CACHE)
+            os.makedirs(BASE_THUMB_CACHE, exist_ok=True)
+        return {"status": "ok", "message": "Thumbnail cache cleared"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def cleanup_thumbnails(max_size_mb: int = 500):
+    """Prune oldest thumbnails if cache exceeds max_size_mb."""
+    if not os.path.exists(BASE_THUMB_CACHE):
+        return
+        
+    try:
+        # Get all thumbnails with their sizes and access/mod times
+        thumbs = []
+        total_size = 0
+        for root, dirs, files in os.walk(BASE_THUMB_CACHE):
+            for f in files:
+                p = os.path.join(root, f)
+                stat = os.stat(p)
+                thumbs.append({
+                    "path": p,
+                    "size": stat.st_size,
+                    "time": stat.st_mtime
+                })
+                total_size += stat.st_size
+        
+        # If over limit, sort by time and delete oldest
+        if total_size > max_size_mb * 1024 * 1024:
+            thumbs.sort(key=lambda x: x["time"])
+            target_to_delete = total_size - (max_size_mb * 0.8 * 1024 * 1024) # Shrink to 80% to avoid immediate thrashing
+            deleted_size = 0
+            for t in thumbs:
+                try:
+                    os.remove(t["path"])
+                    deleted_size += t["size"]
+                    if deleted_size >= target_to_delete:
+                        break
+                except:
+                    continue
+            logger.info(f"Thumbnail cleanup finished. Deleted {deleted_size / (1024*1024):.1f} MB.")
+    except Exception as e:
+        logger.error(f"Error during thumbnail cleanup: {e}")
+
+class BatchStackRequest(BaseModel):
+    groups: list[list[str]]
+    output_names: list[str]
+    flags: dict = {}
+
+@app.post("/stack/batch")
+async def focus_stack_batch(request: BatchStackRequest):
+    results = []
+    errors = []
+    
+    for idx, image_names in enumerate(request.groups):
+        try:
+            input_paths = [os.path.join(BASE_DATA_PATH, name) for name in image_names]
+            for p in input_paths:
+                if not os.path.exists(p):
+                    raise ValueError(f"Image not found: {p}")
+            
+            output_name = request.output_names[idx] if idx < len(request.output_names) else f"batch_stack_{int(time.time())}_{idx}.tif"
+            
+            if len(input_paths) > 0:
+                parent_dir = os.path.dirname(os.path.dirname(input_paths[0]))
+                processed_dir = os.path.join(parent_dir, "processed")
+                os.makedirs(processed_dir, exist_ok=True)
+                stacker.output_dir = processed_dir
+            else:
+                stacker.output_dir = os.path.join(BASE_DATA_PATH, "processed")
+                os.makedirs(stacker.output_dir, exist_ok=True)
+                
+            success, output_path, logs = await asyncio.to_thread(stacker.stack, input_paths, output_name, request.flags)
+            
+            if success and output_path:
+                rel_path = os.path.relpath(output_path, BASE_DATA_PATH)
+                results.append({
+                    "filename": rel_path,
+                    "url": f"/data_files/{rel_path}"
+                })
+            else:
+                errors.append(f"Stack {idx} failed")
+        except Exception as e:
+            errors.append(f"Stack {idx} error: {str(e)}")
+            
+    return {"status": "complete", "results": results, "errors": errors}
+
 @app.post("/stack")
 async def focus_stack(request: StackRequest):
     input_paths = [os.path.join(BASE_DATA_PATH, name) for name in request.image_names]
@@ -308,7 +477,7 @@ async def focus_stack(request: StackRequest):
         stacker.output_dir = os.path.join(BASE_DATA_PATH, "processed")
         os.makedirs(stacker.output_dir, exist_ok=True)
     
-    success, output_path, logs = stacker.stack(input_paths, request.output_name, request.flags)
+    success, output_path, logs = await asyncio.to_thread(stacker.stack, input_paths, request.output_name, request.flags)
     
     if success and output_path:
         rel_path = os.path.relpath(output_path, BASE_DATA_PATH)
@@ -326,21 +495,21 @@ async def focus_stack(request: StackRequest):
 
 @app.get("/camera/config/{name}")
 async def get_camera_config(name: str):
-    value = camera.get_config(name)
+    value = await asyncio.to_thread(camera.get_config, name)
     if value is not None:
         return {"name": name, "value": value}
     raise HTTPException(status_code=404, detail="Config not found")
 
 @app.post("/camera/config/{name}")
 async def set_camera_config(name: str, data: dict = Body(...)):
-    success = camera.set_config(name, data.get("value"))
+    success = await asyncio.to_thread(camera.set_config, name, data.get("value"))
     if success:
         return {"status": "ok"}
     raise HTTPException(status_code=500, detail=f"Failed to set config {name}")
 
 @app.get("/camera/options/{name}")
 async def get_camera_options(name: str):
-    options = camera.get_config_options(name)
+    options = await asyncio.to_thread(camera.get_config_options, name)
     return {"options": options}
 
 if __name__ == "__main__":

@@ -27,9 +27,8 @@ class CameraManager:
         date_str = time.strftime("%Y_%m_%d", now)
         if self.session_date != date_str:
             self.session_date = date_str
-            self.session_folder = time.strftime("%H_%M_%S", now)
             
-            base = os.path.join(self.base_data_path, self.session_date, self.session_folder)
+            base = os.path.join(self.base_data_path, self.session_date)
             self.storage_path = os.path.join(base, "raw")
             self.previews_path = os.path.join(base, "previews")
             
@@ -116,15 +115,15 @@ class CameraManager:
                         try:
                             logger.info(f"Converting {target} native raw to .png...")
                             with rawpy.imread(target) as raw:
-                                rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True, bright=1.0)
+                                rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, bright=1.0)
                                 bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
                                 png_target = os.path.splitext(target)[0] + ".png"
                                 cv2.imwrite(png_target, bgr)
-                            os.remove(target)
+                            # os.remove(target)  <-- Keep original RAW
                             target = png_target
                             logger.info(f"Successfully transcoded to {target}")
                         except Exception as e:
-                            logger.error(f"Failed converting CR2 to BMP: {e}")
+                            logger.error(f"Failed converting CR2 to PNG: {e}")
                     else:
                         try:
                             # Also ensure JPGs are saved as PNG
@@ -133,7 +132,7 @@ class CameraManager:
                             if img is not None:
                                 png_target = os.path.splitext(target)[0] + ".png"
                                 cv2.imwrite(png_target, img)
-                                os.remove(target)
+                                # os.remove(target) <-- Keep original JPG
                                 target = png_target
                                 logger.info(f"Successfully transcoded to {target}")
                         except Exception as e:
@@ -210,63 +209,81 @@ class CameraManager:
 
     def auto_probe_exposure(self):
         """Try to find optimal exposure by seeking most even color distribution (histogram)."""
-        # 1. Set high ISO
+        # 1. Get available options
         iso_options = self.get_config_options("iso")
-        target_iso = "3200" if "3200" in iso_options else (iso_options[-1] if iso_options else "1600")
-        self.set_config("iso", target_iso)
-        
-        # 2. Get shutterspeeds
         ss_options = self.get_config_options("shutterspeed")
-        if not ss_options:
+        if not iso_options or not ss_options:
             return False
-            
-        best_ss = ss_options[len(ss_options)//2] 
-        best_score = -float('inf')
+
+        # Start with highest ISO as requested
+        current_iso_idx = len(iso_options) - 1
         
-        # Sampling indices - linear scan is slow, but we can do a subset
-        # We'll skip some to be faster but still cover the range
-        step = max(1, len(ss_options) // 10)
-        samples = list(range(0, len(ss_options), step))
-        if (len(ss_options)-1) not in samples:
-            samples.append(len(ss_options)-1)
-        
-        for idx in samples:
-            ss = ss_options[idx]
-            self.set_config("shutterspeed", ss)
-            time.sleep(0.1)
-            preview_path = self.capture_preview()
-            if not preview_path: continue
+        best_overall_ss = ss_options[0]
+        best_overall_iso = iso_options[current_iso_idx]
+        best_overall_score = -float('inf')
+
+        while current_iso_idx >= 0:
+            target_iso = iso_options[current_iso_idx]
+            self.set_config("iso", target_iso)
+            logger.info(f"Probing with ISO {target_iso}...")
+
+            best_ss = ss_options[len(ss_options)//2] 
+            best_score = -float('inf')
+            best_is_overexposed = False
             
-            img = cv2.imread(preview_path)
-            if img is None: continue
+            # Sampling shutterspeeds (subset for performance)
+            step = max(1, len(ss_options) // 10)
+            samples = list(range(0, len(ss_options), step))
+            if (len(ss_options)-1) not in samples:
+                samples.append(len(ss_options)-1)
             
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
-            # Calculate Histogram characteristics
-            mean = np.mean(gray)
-            median = np.median(gray)
-            std = np.std(gray)
-            
-            # Percent of clipped pixels (first and last bin)
-            clipped_low = np.sum(gray <= 5) / gray.size
-            clipped_high = np.sum(gray >= 250) / gray.size
-            
-            # Score logic: 
-            # 1. Center the median near 128
-            # 2. Maximize standard deviation (even spread)
-            # 3. Heavily penalize clipping at either end
-            score = (std * 0.5) - abs(median - 128) - (clipped_low * 200) - (clipped_high * 200)
-            
-            logger.info(f"Probing SS {ss}: Median {median:.1f}, Std {std:.1f}, Clip L/H {clipped_low:.1%}/{clipped_high:.1%}, Score {score:.1f}")
-            
-            if score > best_score:
-                best_score = score
-                best_ss = ss
+            for idx in samples:
+                ss = ss_options[idx]
+                self.set_config("shutterspeed", ss)
+                time.sleep(0.1)
+                preview_path = self.capture_preview()
+                if not preview_path: continue
                 
+                img = cv2.imread(preview_path)
+                if img is None: continue
+                
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                median = np.median(gray)
+                std = np.std(gray)
+                clipped_low = np.sum(gray <= 5) / gray.size
+                clipped_high = np.sum(gray >= 250) / gray.size
+                
+                # Check for extreme overexposure
+                is_overexposed = clipped_high > 0.1 or median > 200
+                
+                score = (std * 0.5) - abs(median - 128) - (clipped_low * 200) - (clipped_high * 200)
+                logger.info(f"Probing ISO {target_iso} SS {ss}: Median {median:.1f}, Clip H {clipped_high:.1%}, Score {score:.1f}")
+                
+                if score > best_score:
+                    best_score = score
+                    best_ss = ss
+                    best_is_overexposed = is_overexposed
+
+            # Update overall best
+            if best_score > best_overall_score:
+                best_overall_score = best_score
+                best_overall_ss = best_ss
+                best_overall_iso = target_iso
+
+            # If the best result at this ISO is still too bright, try a lower ISO
+            if best_is_overexposed and current_iso_idx > 0:
+                logger.info(f"ISO {target_iso} is too bright even at best SS. Stepping down ISO.")
+                current_iso_idx -= 1
+                continue
+            else:
+                # Found a good balance or cannot improve further
+                break
+
         # Final set
-        self.set_config("shutterspeed", best_ss)
-        logger.info(f"Auto-probe (Histogram) finished. Best SS: {best_ss} at ISO {target_iso}")
-        return {"iso": target_iso, "shutterspeed": best_ss}
+        self.set_config("iso", best_overall_iso)
+        self.set_config("shutterspeed", best_overall_ss)
+        logger.info(f"Auto-probe finished. Best: {best_overall_ss} at ISO {best_overall_iso} (Score: {best_overall_score:.1f})")
+        return {"iso": best_overall_iso, "shutterspeed": best_overall_ss}
 
     def close(self):
         with self._lock:

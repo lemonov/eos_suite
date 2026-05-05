@@ -14,6 +14,17 @@ export interface CanvasImage {
   blendMode: string;
   scaleX: number;
   scaleY: number;
+  rotation: number;
+  maskLines: any[];
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  activeFilter?: string;
+  filterIntensity?: number;
+  blurLines?: any[];
+  text?: string;
+  fontSize?: number;
+  color?: string;
 }
 
 interface CanvasContextType {

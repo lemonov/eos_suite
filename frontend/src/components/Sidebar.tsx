@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Camera, RefreshCw, Sliders, Zap } from "lucide-react";
+import { Camera, RefreshCw, Sliders, Zap, Trash2 } from "lucide-react";
 
 interface SidebarProps {
   onCapture: () => void;
@@ -183,9 +183,22 @@ export default function Sidebar({ onCapture }: SidebarProps) {
           <div className="sidebar-title flex items-center gap-2 mb-4">
               <RefreshCw size={10} className="text-dark-accent" /> Actions
           </div>
-          <button onClick={checkStatus} className="dark-button w-full justify-center flex gap-2 border-white/5">
-             <RefreshCw size={12} /> Sync Settings
-          </button>
+          <div className="space-y-2">
+            <button onClick={checkStatus} className="dark-button w-full justify-center flex gap-2 border-white/5 bg-white/5">
+                <RefreshCw size={12} /> Sync Settings
+            </button>
+            <button 
+              onClick={async () => {
+                if (confirm("Clear thumbnail cache? Library will take longer to load images once.")) {
+                   const res = await fetch("http://localhost:8000/images/thumb/clear", { method: "POST" });
+                   if (res.ok) alert("Cache cleared");
+                }
+              }} 
+              className="dark-button w-full justify-center flex gap-2 border-white/5 opacity-50 hover:opacity-100"
+            >
+                <Trash2 size={12} /> Clear Cache
+            </button>
+          </div>
         </section>
       </div>
 

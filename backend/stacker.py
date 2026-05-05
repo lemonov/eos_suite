@@ -33,36 +33,50 @@ class FocusStacker:
             os.makedirs(workspace)
 
         try:
-            # 2. Process images (convert CR2 to TIFF if needed)
+            # 2. Process images (prefer original RAW if available for better quality)
             processed_paths = []
             for path in image_paths:
-                if path.lower().endswith(".cr2"):
+                # If path is a .png, check if a .cr2 sibling exists
+                base_no_ext = os.path.splitext(path)[0]
+                cr2_path = base_no_ext + ".cr2"
+                
+                final_input_path = path
+                if os.path.exists(cr2_path):
+                    final_input_path = cr2_path
+
+                if final_input_path.lower().endswith((".cr2", ".dng")):
                     import rawpy
                     import imageio
                     
-                    tiff_name = os.path.splitext(os.path.basename(path))[0] + ".tiff"
+                    tiff_name = os.path.splitext(os.path.basename(final_input_path))[0] + ".tiff"
                     tiff_path = os.path.join(workspace, tiff_name)
                     
-                    logger.info(f"Converting {path} to TIFF for stacking...")
-                    with rawpy.imread(path) as raw:
-                        # Use full quality (no_auto_bright=True to keep exposures consistent)
-                        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True, bright=1.0)
+                    logger.info(f"Converting {final_input_path} to 16-bit TIFF for stacking...")
+                    with rawpy.imread(final_input_path) as raw:
+                        # Use high-quality 16-bit output for stacking
+                        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True, bright=1.0, output_bps=16)
                         imageio.imsave(tiff_path, rgb)
                     processed_paths.append(tiff_path)
                 else:
-                    processed_paths.append(path)
+                    processed_paths.append(final_input_path)
 
             # 3. Run focus-stack
             logger.info(f"Running focus-stack on {len(processed_paths)} images...")
-            # Enforce .png extension
-            if not output_filename.lower().endswith(".png"):
-                output_filename = os.path.splitext(output_filename)[0] + ".png"
+            
+            # Match output extension with first input extension if it's common
+            ext = os.path.splitext(image_paths[0])[1].lower() if image_paths else ".png"
+            if ext not in [".png", ".jpg", ".jpeg", ".tiff", ".tif"]:
+                ext = ".png"
+                
+            if not output_filename.lower().endswith(ext):
+                output_filename = os.path.splitext(output_filename)[0] + ext
             
             output_path = os.path.join(self.output_dir, output_filename)
             
             stack_cmd = [
                 "focus-stack",
                 "--output=" + output_path,
+                "--verbose"
             ]
             if flags:
                 stack_cmd.extend(flags)
@@ -72,7 +86,7 @@ class FocusStacker:
             logger.info(f"Executing: {' '.join(stack_cmd)}")
             result = subprocess.run(stack_cmd, capture_output=True, text=True)
             
-            log_output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            log_output = f"COMMAND:\n{' '.join(stack_cmd)}\n\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
             
             if result.returncode != 0:
                 logger.error(f"focus-stack failed: {result.stderr}")
@@ -82,8 +96,9 @@ class FocusStacker:
             return True, output_path, log_output
 
         except Exception as ex:
-            logger.error(f"Stacking failed with unexpected error: {ex}")
-            return None
+            error_msg = f"Stacking failed with unexpected error: {ex}"
+            logger.error(error_msg)
+            return False, None, error_msg
         finally:
             # focus-stack is efficient and doesn't leave large intermediate files
             # in the same way align_image_stack + enfuse did, but we still clean up the workspace

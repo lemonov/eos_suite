@@ -1,1 +1,9 @@
-1. The live view 
+1. The save rotate etc bar should be on top abouve image/canvas area. 
+1. The layer panel is not existant
+2. The transform tool does not work properly the brackets are exapnding after rotate 
+3. The resize is not working 
+4. The eraser is not working.
+5. Undo redo not working on transforms
+
+
+6. From stitch add support for genereting GIMP project file (.xcf) where layers and positions of images on layers will be exported for further processing in GIMP
